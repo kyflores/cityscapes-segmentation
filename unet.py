@@ -72,26 +72,6 @@ class ResnetBottleneck(nn.Module):
         return x + xid
 
 
-class DownConv(nn.Module):
-    def __init__(self, cin, cout):
-        super().__init__()
-        self.conv_1 = nn.Conv2d(cin, cout, kernel_size=3, stride=1, padding=1)
-        self.bn_1 = nn.BatchNorm2d(cout)
-
-        self.conv_2 = nn.Conv2d(cout, cout, kernel_size=3, stride=1, padding=1)
-        self.bn_2 = nn.BatchNorm2d(cout)
-
-    def forward(self, x):
-        x = self.conv_1(x)
-        x = F.relu(x, inplace=True)
-        x = self.bn_1(x)
-
-        x = self.conv_2(x)
-        x = F.relu(x, inplace=True)
-        x = self.bn_2(x)
-        return x
-
-
 class UpConv(nn.Module):
     def __init__(self, cin, cout):
         super().__init__()
@@ -100,11 +80,8 @@ class UpConv(nn.Module):
 
         # Cat with through connection happens here, which doubles the number of channels.
 
-        self.conv_2 = nn.Conv2d(cin, cout, kernel_size=3, stride=1, padding=1)
-        self.bn_2 = nn.BatchNorm2d(cout)
-
-        self.conv_3 = nn.Conv2d(cout, cout, kernel_size=3, stride=1, padding=1)
-        self.bn_3 = nn.BatchNorm2d(cout)
+        self.conv_1 = ResnetBasic(cin, cout)
+        self.conv_2 = ResnetBasic(cout, cout)
 
     def forward(self, x, xcat):
         # Cat on channel dim
@@ -113,13 +90,8 @@ class UpConv(nn.Module):
 
         tmp = torch.cat((x, xcat), dim=1)
 
-        x = self.conv_2(tmp)
-        x = F.relu(x, inplace=True)
-        x = self.bn_2(x)
-
-        x = self.conv_3(x)
-        x = F.relu(x, inplace=True)
-        x = self.bn_3(x)
+        x = self.conv_1(tmp)
+        x = self.conv_2(x)
 
         return x
 
@@ -128,45 +100,46 @@ class UnetSeg(nn.Module):
     def __init__(self, cin, cout, filts=32):
         super().__init__()
         self.downsample = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.l1 = DownConv(cin, filts)
-        self.l2 = DownConv(filts, filts * 2)
-        self.l3 = DownConv(filts * 2, filts * 4)
-        self.l4 = DownConv(filts * 4, filts * 8)
 
-        self.thru = nn.Sequential(
-            nn.Conv2d(filts * 8, filts * 16, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(inplace=True),
-            nn.BatchNorm2d(filts * 16),
-            nn.Conv2d(filts * 16, filts * 16, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(inplace=True),
-            nn.BatchNorm2d(filts * 16),
-        )
+        self.conv_in = nn.Conv2d(cin, filts, kernel_size=7, stride=2, padding=3)
+        self.bn_in = nn.BatchNorm2d(filts)
+
+        self.l1 = ResnetBasic(filts, filts)
+        self.l2 = ResnetBasic(filts, filts * 2)
+        self.l3 = ResnetBasic(filts * 2, filts * 4)
+        self.l4 = ResnetBasic(filts * 4, filts * 8)
+        self.l5 = ResnetBasic(filts * 8, filts * 16)
 
         self.u1 = UpConv(filts * 16, filts * 8)
         self.u2 = UpConv(filts * 8, filts * 4)
         self.u3 = UpConv(filts * 4, filts * 2)
         self.u4 = UpConv(filts * 2, filts)
-        # Increase the amount of filters at the end of the network
-        self.out7 = nn.Conv2d(filts, cout, kernel_size=1, stride=1)
+
+        self.conv_out = nn.Conv2d(filts, cout, kernel_size=1, stride=1)
+        self.upsample = nn.Upsample(scale_factor=2, mode="bilinear")
 
     def forward(self, x):
+        x = self.conv_in(x)
+        x = self.bn_in(x)
+
         # Down
         x0 = self.l1(x)
         x1 = self.l2(self.downsample(x0))
         x2 = self.l3(self.downsample(x1))
         x3 = self.l4(self.downsample(x2))
 
-        # xb -> x bottleneck
-        xb = self.thru(self.downsample(x3))
+        x4 = self.l5(self.downsample(x3))
 
         # Up
-        xu3 = self.u1(xb, x3)
+        xu3 = self.u1(x4, x3)
         xu4 = self.u2(xu3, x2)
         xu5 = self.u3(xu4, x1)
         xu6 = self.u4(xu5, x0)
 
         # Output
-        xout = self.out7(xu6)
+        xout = self.conv_out(xu6)
+        xout = self.upsample(xout)
+
         return xout
 
 

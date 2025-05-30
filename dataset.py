@@ -97,6 +97,11 @@ class CityScapesDataset(tud.Dataset):
         mask[(mask >= 26)] = 7
         return mask
 
+    def _id_to_classes(self, mask):
+        import cityscapesscripts as css
+
+        # TODO
+
     def __getitem__(self, index) -> tuple[tvtensor.Image, tvtensor.Mask]:
         img = tv.io.decode_image(self.img_names[index])
         img = tvtensor.Image(img)

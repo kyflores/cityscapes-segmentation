@@ -6,6 +6,7 @@ import torch
 import torchvision.io as tio
 import torchvision.utils as tu
 import torchvision.transforms.v2 as tv2
+import torchmetrics as tm
 
 from tqdm import tqdm
 import matplotlib.pyplot as plt
@@ -25,22 +26,29 @@ def train(opt):
     # TODO pull this from a config file
     dim = 512
     batchsize = 16
-    epochs = 100
-    lr = 0.01
+    start_epoch = 0
+    epochs = 150
+    lr = 0.02
     lr_floor = 1e-5
 
     train_tfs = tv2.Compose(
         [
+            # tv2.Resize((512, 256)), # 1/4 scale, cityscapes images are big.
+            tv2.Resize((1024, 512)),  # 1/2 scale, cityscapes images are big.
             tv2.RandomHorizontalFlip(0.5),
             tv2.RandomResizedCrop((dim, dim)),
             tv2.ToDtype(torch.float32, scale=True),
+            tv2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ]
     )
 
     val_tfs = tv2.Compose(
         [
+            # tv2.Resize((512, 256)),
+            tv2.Resize((1024, 512)),
             tv2.RandomCrop((dim, dim)),
             tv2.ToDtype(torch.float32, scale=True),
+            tv2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ]
     )
 
@@ -56,13 +64,13 @@ def train(opt):
     )
 
     # Sample the dataset to make sure our dataloader works.
-    choices = random.choices(train, k=4)
-    imgs = torch.stack([x[0] for x in choices])
-    masks = torch.stack([x[1] for x in choices])
-    fig, axes = plt.subplots(2, 1)
-    axes[0].imshow(random_grid(imgs))
-    axes[1].imshow(random_grid(masks))
-    plt.show()
+    # choices = random.choices(train, k=4)
+    # imgs = torch.stack([x[0] for x in choices])
+    # masks = torch.stack([x[1] for x in choices])
+    # fig, axes = plt.subplots(2, 1)
+    # axes[0].imshow(random_grid(imgs))
+    # axes[1].imshow(random_grid(masks))
+    # plt.show()
 
     # TODO see https://github.com/mcordts/cityscapesScripts/blob/master/cityscapesscripts/helpers/labels.py
     num_classes = train.categories
@@ -79,13 +87,16 @@ def train(opt):
         tmp = torch.load(opt.checkpoint)
         model.load_state_dict(tmp["model"])
         optimizer.load_state_dict(tmp["optim"])
+        scheduler.load_state_dict(tmp["sched"])
+        start_epoch = tmp["epoch"]
+        epochs = tmp["total_epochs"]
 
     lossfn = torch.nn.CrossEntropyLoss(ignore_index=255)
 
     train_loss_plot = []
     loss_plot = []
     try:
-        for epoch in range(epochs):
+        for epoch in range(start_epoch, epochs):
             model.train()
             train_losses = []
             for i, (images, targets) in enumerate(tqdm(train_loader)):
@@ -102,13 +113,13 @@ def train(opt):
 
             train_loss = torch.Tensor(train_losses).mean().item()
             train_loss_plot.append(train_loss)
-            print("Train Loss {}: {} ".format(epoch, train_loss))
+            print("Epoch: {}, Train Loss: {:.4f}".format(epoch, train_loss))
             scheduler.step()
 
-            if epoch % 5 == 0:
+            if (epoch) % 5 == 0:
                 losses = []
                 model.eval()
-                correct = 0
+                corrects = []
                 total = len(val)
                 print("Running val...")
                 with torch.no_grad():
@@ -117,23 +128,30 @@ def train(opt):
                         targets = targets.squeeze(1).long().to(device)
                         outs = model(images)
 
-                        if False:
-                            out_img = outs.softmax(dim=1).max(dim=1)[1].cpu()
-                            fig, axes = plt.subplots(2, 1)
-                            axes[0].imshow(random_grid(30 * targets.cpu()[0]))
-                            axes[1].imshow(random_grid(30 * out_img[0]))
-                            plt.show()
+                        num_correct = torch.count_nonzero(
+                            targets == outs.softmax(dim=1).max(dim=1)[1]
+                        )
+                        frac_correct = (
+                            100 * (num_correct / targets.numel()).float().cpu().item()
+                        )
+                        corrects.append(frac_correct)
 
                         loss = lossfn(outs, targets)
                         losses.append(loss.cpu().item())
 
-                eval_loss = torch.Tensor(losses).mean().item()
-                print("Eval Loss {}: {} ".format(epoch, eval_loss))
+                eval_loss = torch.tensor(losses).mean().item()
+                correct = torch.tensor(corrects).mean().item()
+                print(
+                    "Epoch: {}, Eval Loss: {:.4f}. {:.2f}% pixelwise accuracy".format(
+                        epoch, eval_loss, correct
+                    )
+                )
                 print("Current LR is {}".format(scheduler.get_last_lr()))
 
                 torch.save(
                     {
                         "epoch": epoch,
+                        "total_epochs": epochs,
                         "model": model.state_dict(),
                         "optim": optimizer.state_dict(),
                         "sched": scheduler.state_dict(),
@@ -148,34 +166,46 @@ def train(opt):
     plt.plot(loss_plot)
     plt.plot(train_loss_plot)
     plt.show()
+    torch.save(
+        {
+            "epoch": epoch,
+            "total_epochs": epochs,
+            "model": model.state_dict(),
+            "optim": optimizer.state_dict(),
+            "sched": scheduler.state_dict(),
+        },
+        "checkpoint_last.pth",
+    )
 
 
 def visualize(opt):
-    device = opt["device"]
+    device = opt.device
 
     val_tfs = tv2.Compose([tv2.ToDtype(torch.float32, scale=True)])
-    val = dataset.CityScapesDataset(
-        "/home/kyle/Documents/cityscapes", "val", tfs=val_tfs
-    )
+    val = dataset.CityScapesDataset(opt.path, "val", tfs=val_tfs)
     val_loader = torch.utils.data.DataLoader(
         val,
         batch_size=1,
     )
 
-    tmp = torch.load(opt["checkpoint"])
+    tmp = torch.load(opt.checkpoint)
     model = unet.UnetSeg(3, val.categories, filts=32)
     model.load_state_dict(tmp["model"])
     model = model.to(device)
 
-    os.makedirs("eval", exist_ok=True)
+    os.makedirs("vis", exist_ok=True)
 
+    ioumetric = tm.JaccardIndex(task="multiclass", num_classes=val.categories)
     with torch.no_grad():
+        ious = []
         for ix, (img, lbl) in enumerate(tqdm(val_loader)):
             pred = model(img.to(device))
             pred = pred.softmax(dim=1).max(dim=1)[1].cpu()
 
+            ious.append(ioumetric(pred.unsqueeze(0), lbl).cpu().float().item())
+
             img = img.squeeze(0)
-            lbl = lbl.squeeze(0).float()
+            lbl = lbl.squeeze(0)
 
             out = torch.cat(
                 [255 * torch.mean(img, dim=0, keepdim=True), 10 * lbl, 10 * pred], dim=1
@@ -183,8 +213,10 @@ def visualize(opt):
 
             tio.write_jpeg(
                 out.clip(0, 255).to(torch.uint8).unsqueeze(0).expand(3, -1, -1),
-                "eval/{}.jpg".format(ix),
+                "vis/{}.jpg".format(ix),
             )
+
+        print("Average IOU {}".format(torch.tensor(ious).mean().item()))
 
 
 if __name__ == "__main__":

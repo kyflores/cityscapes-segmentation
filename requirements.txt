@@ -1,4 +1,7 @@
 torch
 torchvision
+torchmetrics
 tqdm
 matplotlib
+cityscapesscripts
+
