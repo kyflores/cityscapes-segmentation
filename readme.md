@@ -16,9 +16,9 @@ Unpack the separate parts of cityscapes into one directory. For instance...
 ├── license.txt
 └── README
 ```
+Many of the cityscapes classes are not used as per the instructions, so they are assigned
+the "background" label.
 
-Cityscapes has object classes, but also category classes. For instance, bus and car have different ids but belong to the same category.
-This repo solves a simpler problem and reduces the dataset to categories only, of which there are only 8.
 
 ## Usage
 ```
@@ -32,6 +32,11 @@ python train.py -a train -p /path/to/cityscapes -a /path/to/checkpoint.pth
 
 # View outputs. Creates a folder called vis and writes to it
 python train.py -a vis -p /path/to/cityscpaes -a /path/to/checkpoint.pth
+```
+
+## Eval
+```
+CITYSCAPES_RESULTS="$(pwd)/eval_result/" CITYSCAPES_DATASET="$(pwd)/../cityscapes/" csEvalPixelLevelSemanticLabeling
 ```
 
 ## Model

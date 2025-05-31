@@ -4,4 +4,4 @@ torchmetrics
 tqdm
 matplotlib
 cityscapesscripts
-
+torchvision

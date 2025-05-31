@@ -8,6 +8,8 @@ import torchvision as tv
 import torchvision.tv_tensors as tvtensor
 import torchvision.transforms.v2 as tv2
 
+import labels
+
 TRAIN_SUBSETS = [
     "aachen",
     "bochum",
@@ -43,7 +45,7 @@ class CityScapesDataset(tud.Dataset):
         self.tfs = tfs
 
         # TODO see https://github.com/mcordts/cityscapesScripts/blob/master/cityscapesscripts/helpers/labels.py
-        self.classes = 19
+        self.classes = 20
         self.categories = 8
 
         if split == "train":
@@ -75,45 +77,40 @@ class CityScapesDataset(tud.Dataset):
     def __len__(self):
         return len(self.img_names)
 
-    # Cityscapes has object classes, but also category classes. For instance,
-    # bus and car have different ids but belong to the same category.
-    # Solve a simpler problem and reduce the dataset to categories only.
-    def _simplify_mask_to_categories(self, mask):
-        # void
-        mask[mask < 7] = 0
-        # flat
-        mask[(mask >= 7) & (mask < 11)] = 1
-        # construction
-        mask[(mask >= 11) & (mask < 17)] = 2
-        # object
-        mask[(mask >= 17) & (mask < 21)] = 3
-        # nature
-        mask[(mask >= 21) & (mask < 23)] = 4
-        # sky
-        mask[(mask == 23)] = 5
-        # human
-        mask[(mask >= 24) & (mask < 26)] = 6
-        # vehicle
-        mask[(mask >= 26)] = 7
+    def id_to_classes(self, mask):
+        for lb in labels.labels:
+            if (lb.trainId != 255) and (lb.trainId != -1):
+                mask[mask == lb.id] = lb.trainId
+            else:
+                # Assign 19 to background or "everything else"
+                mask[mask == lb.id] = 19
         return mask
 
-    def _id_to_classes(self, mask):
-        import cityscapesscripts as css
+    def class_to_orig_id(self, mask):
+        m = torch.zeros_like(mask)
+        for lb in labels.labels:
+            if (lb.trainId != 255) and (lb.trainId != -1):
+                tmp = torch.zeros_like(mask)
+                tmp[mask == lb.trainId] = lb.id
+                m += tmp
 
-        # TODO
+        m[m == 19] = 0
 
-    def __getitem__(self, index) -> tuple[tvtensor.Image, tvtensor.Mask]:
+        return m
+
+    def __getitem__(self, index) -> tuple[tvtensor.Image, tvtensor.Mask, str]:
+        name = self.img_names[index]
         img = tv.io.decode_image(self.img_names[index])
         img = tvtensor.Image(img)
 
         mask = tv.io.decode_image(self.lbl_names[index])
-        mask = self._simplify_mask_to_categories(mask)
+        mask = self.id_to_classes(mask)
         mask = tvtensor.Mask(mask)
 
         if self.tfs is None:
-            return img, mask
+            return img, mask, name
         else:
-            return self.tfs((img, mask))
+            return (*(self.tfs((img, mask))), name)
 
 
 if __name__ == "__main__":

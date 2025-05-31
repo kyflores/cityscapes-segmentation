@@ -6,10 +6,14 @@ import torch.nn.functional as F
 class ResnetBasic(nn.Module):
     def __init__(self, cin, cout):
         super().__init__()
-        self.conv_1 = nn.Conv2d(cin, cout, kernel_size=3, stride=1, padding=1)
+        self.conv_1 = nn.Conv2d(
+            cin, cout, kernel_size=3, stride=1, padding=1, padding_mode="replicate"
+        )
         self.bn_1 = nn.BatchNorm2d(cout)
 
-        self.conv_2 = nn.Conv2d(cout, cout, kernel_size=3, stride=1, padding=1)
+        self.conv_2 = nn.Conv2d(
+            cout, cout, kernel_size=3, stride=1, padding=1, padding_mode="replicate"
+        )
         self.bn_2 = nn.BatchNorm2d(cout)
 
         self.skip_proj = nn.Conv2d(cin, cout, kernel_size=1, stride=1)
@@ -30,6 +34,71 @@ class ResnetBasic(nn.Module):
         x = self.bn_2(x)
 
         return x + xid
+
+
+class ResnetDilated(nn.Module):
+    def __init__(self, cin, cout):
+        super().__init__()
+        self.conv_1 = nn.Conv2d(
+            cin, cout, kernel_size=3, stride=1, padding=1, padding_mode="replicate"
+        )
+        self.bn_1 = nn.BatchNorm2d(cout)
+        self.conv_2 = nn.Conv2d(
+            cout,
+            cout,
+            kernel_size=3,
+            stride=1,
+            dilation=2,
+            padding=2,
+            padding_mode="replicate",
+        )
+        self.bn_2 = nn.BatchNorm2d(cout)
+
+        self.conv_3 = nn.Conv2d(
+            cin,
+            cout,
+            kernel_size=3,
+            stride=1,
+            dilation=2,
+            padding=2,
+            padding_mode="replicate",
+        )
+        self.bn_3 = nn.BatchNorm2d(cout)
+        self.conv_4 = nn.Conv2d(
+            cout,
+            cout,
+            kernel_size=3,
+            stride=1,
+            dilation=4,
+            padding=4,
+            padding_mode="replicate",
+        )
+        self.bn_4 = nn.BatchNorm2d(cout)
+
+        self.skip_proj = nn.Conv2d(cin, cout, kernel_size=1, stride=1)
+        self.skip_bn = nn.BatchNorm2d(cout)
+
+        self.act = nn.ReLU()
+
+    def forward(self, x):
+        xid = self.skip_proj(x)
+        xid = self.skip_bn(xid)
+
+        x_l = self.conv_1(x)
+        x_l = self.act(x_l)
+        x_l = self.bn_1(x_l)
+        x_l = self.conv_2(x_l)
+        x_l = self.act(x_l)
+        x_l = self.bn_2(x_l)
+
+        x_r = self.conv_1(x)
+        x_r = self.act(x_r)
+        x_r = self.bn_1(x_r)
+        x_r = self.conv_2(x_r)
+        x_r = self.act(x_r)
+        x_r = self.bn_2(x_r)
+
+        return x_l + x_r + xid
 
 
 class ResnetBottleneck(nn.Module):
@@ -115,6 +184,7 @@ class UnetSeg(nn.Module):
         self.u3 = UpConv(filts * 4, filts * 2)
         self.u4 = UpConv(filts * 2, filts)
 
+        # Final upsample is to get the image back to input size
         self.conv_out = nn.Conv2d(filts, cout, kernel_size=1, stride=1)
         self.upsample = nn.Upsample(scale_factor=2, mode="bilinear")
 

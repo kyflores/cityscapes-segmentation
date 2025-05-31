@@ -1,18 +1,28 @@
 import os
-import random
 import argparse
 
 import torch
+import torch.nn.functional as F
 import torchvision.io as tio
 import torchvision.utils as tu
 import torchvision.transforms.v2 as tv2
 import torchmetrics as tm
 
 from tqdm import tqdm
+from torchinfo import summary
 import matplotlib.pyplot as plt
 
 import dataset
 import unet
+
+
+# https://arxiv.org/pdf/1708.02002
+# https://discuss.pytorch.org/t/focal-loss-for-imbalanced-multi-class-classification-in-pytorch/61289/2
+def focal_loss(inputs, target, alpha, gamma):
+    ce = F.cross_entropy(inputs, target, reduction="none", ignore_index=255)
+    pt = torch.exp(-ce)
+    focal_loss = (alpha * (1 - pt) ** gamma * ce).mean()  # mean over the batch
+    return focal_loss
 
 
 def random_grid(imgs):
@@ -27,14 +37,12 @@ def train(opt):
     dim = 512
     batchsize = 16
     start_epoch = 0
-    epochs = 150
-    lr = 0.02
+    epochs = 100
+    lr = 0.01
     lr_floor = 1e-5
 
     train_tfs = tv2.Compose(
         [
-            # tv2.Resize((512, 256)), # 1/4 scale, cityscapes images are big.
-            tv2.Resize((1024, 512)),  # 1/2 scale, cityscapes images are big.
             tv2.RandomHorizontalFlip(0.5),
             tv2.RandomResizedCrop((dim, dim)),
             tv2.ToDtype(torch.float32, scale=True),
@@ -44,9 +52,7 @@ def train(opt):
 
     val_tfs = tv2.Compose(
         [
-            # tv2.Resize((512, 256)),
-            tv2.Resize((1024, 512)),
-            tv2.RandomCrop((dim, dim)),
+            tv2.RandomCrop((dim, dim)),  # Crop val to keep the image size small.
             tv2.ToDtype(torch.float32, scale=True),
             tv2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ]
@@ -63,18 +69,9 @@ def train(opt):
         val, batch_size=batchsize, num_workers=8, shuffle=True
     )
 
-    # Sample the dataset to make sure our dataloader works.
-    # choices = random.choices(train, k=4)
-    # imgs = torch.stack([x[0] for x in choices])
-    # masks = torch.stack([x[1] for x in choices])
-    # fig, axes = plt.subplots(2, 1)
-    # axes[0].imshow(random_grid(imgs))
-    # axes[1].imshow(random_grid(masks))
-    # plt.show()
-
-    # TODO see https://github.com/mcordts/cityscapesScripts/blob/master/cityscapesscripts/helpers/labels.py
-    num_classes = train.categories
+    num_classes = train.classes
     model = unet.UnetSeg(3, num_classes, filts=32).to(device).train()
+    summary(model, (1, 3, 256, 256))
 
     optimizer = torch.optim.SGD(
         model.parameters(), lr=lr, momentum=0.9, weight_decay=1e-4
@@ -86,12 +83,11 @@ def train(opt):
     if opt.checkpoint:
         tmp = torch.load(opt.checkpoint)
         model.load_state_dict(tmp["model"])
-        optimizer.load_state_dict(tmp["optim"])
-        scheduler.load_state_dict(tmp["sched"])
-        start_epoch = tmp["epoch"]
-        epochs = tmp["total_epochs"]
-
-    lossfn = torch.nn.CrossEntropyLoss(ignore_index=255)
+        if not opt.weights_only:
+            optimizer.load_state_dict(tmp["optim"])
+            scheduler.load_state_dict(tmp["sched"])
+            start_epoch = tmp["epoch"]
+            epochs = tmp["total_epochs"]
 
     train_loss_plot = []
     loss_plot = []
@@ -99,14 +95,17 @@ def train(opt):
         for epoch in range(start_epoch, epochs):
             model.train()
             train_losses = []
-            for i, (images, targets) in enumerate(tqdm(train_loader)):
+            for i, (images, targets, _) in enumerate(tqdm(train_loader)):
                 optimizer.zero_grad()
                 images = images.to(device)
                 # CrossEntropy allows 2D map of IDs rather than one-hot encoded map
-                targets = targets.squeeze(1).long().to(device)
+                target_ids = targets.squeeze(1).long().to(device)
+
+                # This expands the targets to a full distribution
+                # target_dist = F.one_hot(target_ids.squeeze(1).long().to(device)).permute(0, 3, 1, 2).float()
 
                 outs = model(images)
-                loss = lossfn(outs, targets)
+                loss = focal_loss(outs, target_ids, alpha=0.25, gamma=2.0)
                 loss.backward()
                 train_losses.append(loss.cpu().item())
                 optimizer.step()
@@ -123,7 +122,7 @@ def train(opt):
                 total = len(val)
                 print("Running val...")
                 with torch.no_grad():
-                    for i, (images, targets) in enumerate(tqdm(val_loader)):
+                    for i, (images, targets, _) in enumerate(tqdm(val_loader)):
                         images = images.to(device)
                         targets = targets.squeeze(1).long().to(device)
                         outs = model(images)
@@ -136,7 +135,7 @@ def train(opt):
                         )
                         corrects.append(frac_correct)
 
-                        loss = lossfn(outs, targets)
+                        loss = focal_loss(outs, targets, alpha=0.25, gamma=2.0)
                         losses.append(loss.cpu().item())
 
                 eval_loss = torch.tensor(losses).mean().item()
@@ -181,7 +180,12 @@ def train(opt):
 def visualize(opt):
     device = opt.device
 
-    val_tfs = tv2.Compose([tv2.ToDtype(torch.float32, scale=True)])
+    val_tfs = tv2.Compose(
+        [
+            tv2.ToDtype(torch.float32, scale=True),
+            tv2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ]
+    )
     val = dataset.CityScapesDataset(opt.path, "val", tfs=val_tfs)
     val_loader = torch.utils.data.DataLoader(
         val,
@@ -189,16 +193,23 @@ def visualize(opt):
     )
 
     tmp = torch.load(opt.checkpoint)
-    model = unet.UnetSeg(3, val.categories, filts=32)
+    model = unet.UnetSeg(3, val.classes, filts=32)
     model.load_state_dict(tmp["model"])
     model = model.to(device)
+    model = torch.compile(model)
 
     os.makedirs("vis", exist_ok=True)
+    os.makedirs("eval_result", exist_ok=True)
 
-    ioumetric = tm.JaccardIndex(task="multiclass", num_classes=val.categories)
+    ioumetric = tm.JaccardIndex(
+        task="multiclass", num_classes=val.classes, ignore_index=19
+    )
     with torch.no_grad():
         ious = []
-        for ix, (img, lbl) in enumerate(tqdm(val_loader)):
+        for ix, (img, lbl, name) in enumerate(tqdm(val_loader)):
+            nm = os.path.splitext(os.path.basename(name[0]))[0]
+            city, seq, frame, _ = nm.split("_")
+
             pred = model(img.to(device))
             pred = pred.softmax(dim=1).max(dim=1)[1].cpu()
 
@@ -208,12 +219,23 @@ def visualize(opt):
             lbl = lbl.squeeze(0)
 
             out = torch.cat(
-                [255 * torch.mean(img, dim=0, keepdim=True), 10 * lbl, 10 * pred], dim=1
+                [
+                    255 * (0.45 + torch.mean(img, dim=0, keepdim=True) * 0.225),
+                    10 * lbl,
+                    10 * pred,
+                ],
+                dim=1,
             ).squeeze()
 
             tio.write_jpeg(
                 out.clip(0, 255).to(torch.uint8).unsqueeze(0).expand(3, -1, -1),
-                "vis/{}.jpg".format(ix),
+                f"vis/{city}_{seq}_{frame}.png".format(ix),
+            )
+
+            eval_result = val.class_to_orig_id(pred)
+            tio.write_png(
+                eval_result.cpu().to(torch.uint8),
+                f"eval_result/{city}_{seq}_{frame}.png",
             )
 
         print("Average IOU {}".format(torch.tensor(ious).mean().item()))
@@ -233,6 +255,11 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "-c", "--checkpoint", help="Checkpoint path to restore", default=""
+    )
+    parser.add_argument(
+        "--weights-only",
+        help="Load weights from checkpoint, but not optimizer state, epoch, LR",
+        action="store_true",
     )
     parser.add_argument(
         "-p", "--path", help="Path to cityscapes root", default="./cityscapes"
