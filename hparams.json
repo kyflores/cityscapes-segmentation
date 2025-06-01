@@ -1,0 +1,8 @@
+{
+    "dim" : 512,
+    "batchsize" : 16,
+    "epochs" : 50,
+    "lr" : 5e-4,
+    "lr_floor" : 2e-5,
+    "encoder" : "resnet18"
+}

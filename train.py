@@ -1,5 +1,6 @@
 import os
 import argparse
+import json
 
 import torch
 import torch.nn.functional as F
@@ -13,6 +14,7 @@ from torchinfo import summary
 import matplotlib.pyplot as plt
 
 import dataset
+import fcn
 import unet
 
 
@@ -25,28 +27,56 @@ def focal_loss(inputs, target, alpha, gamma):
     return focal_loss
 
 
-def random_grid(imgs):
-    grid = tu.make_grid(imgs)
-    return grid.permute(1, 2, 0)
+# Adapted from https://medium.com/data-scientists-diary/implementation-of-dice-loss-vision-pytorch-7eef1e438f68
+def dice_loss(preds, targets, ignore_index=None):
+    b, num_classes, h, w = preds.shape
+
+    preds = preds.softmax(dim=1)
+    target_dist = (
+        F.one_hot(targets.squeeze(1).long().to(preds.device), num_classes=num_classes)
+        .permute(0, 3, 1, 2)
+        .float()
+    )
+
+    assert target_dist.shape == preds.shape
+
+    dice = torch.zeros(b, dtype=torch.float32, device=preds.device)
+    for c in range(num_classes):
+        if ignore_index is not None:
+            if c == ignore_index:
+                continue
+        intersection = (2 * preds[:, c] * target_dist[:, c]).sum(dim=(-2, -1))
+        union = (preds[:, c] + target_dist[:, c]).sum(dim=(-2, -1))
+
+        dice += (intersection + 1) / (union + 1)
+
+    return 1 - dice.mean() / num_classes
 
 
-def train(opt):
+def train(opt, hparams):
     device = opt.device
 
-    # TODO pull this from a config file
-    dim = 512
-    batchsize = 16
+    dim = hparams["dim"]
+    batchsize = hparams["batchsize"]
     start_epoch = 0
-    epochs = 100
-    lr = 0.01
-    lr_floor = 1e-5
+    epochs = hparams["epochs"]
+    lr = hparams["lr"]
+    lr_floor = hparams["lr_floor"]
+    encoder = hparams["encoder"]
 
     train_tfs = tv2.Compose(
         [
             tv2.RandomHorizontalFlip(0.5),
             tv2.RandomResizedCrop((dim, dim)),
             tv2.ToDtype(torch.float32, scale=True),
+            # Since we use pretrained resnet, we also want to use imagenet normalization.
             tv2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            # tv2.ColorJitter(
+            #     brightness=(0.875, 1.125),
+            #     contrast=(0.9, 1.1),
+            #     saturation=(0.9, 1.1),
+            #     hue=None,
+            # )
         ]
     )
 
@@ -70,12 +100,11 @@ def train(opt):
     )
 
     num_classes = train.classes
-    model = unet.UnetSeg(3, num_classes, filts=32).to(device).train()
-    summary(model, (1, 3, 256, 256))
+    # model = unet.UnetSeg(3, num_classes, filts=32).to(device).train()
+    model = fcn.Fcn(3, num_classes, encoder=encoder).to(device).train()
+    summary(model, (1, 3, dim, dim))
 
-    optimizer = torch.optim.SGD(
-        model.parameters(), lr=lr, momentum=0.9, weight_decay=1e-4
-    )
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=epochs, eta_min=lr_floor
     )
@@ -88,6 +117,8 @@ def train(opt):
             scheduler.load_state_dict(tmp["sched"])
             start_epoch = tmp["epoch"]
             epochs = tmp["total_epochs"]
+        else:
+            print("Don't load opt")
 
     train_loss_plot = []
     loss_plot = []
@@ -95,6 +126,7 @@ def train(opt):
         for epoch in range(start_epoch, epochs):
             model.train()
             train_losses = []
+            dice_losses = []
             for i, (images, targets, _) in enumerate(tqdm(train_loader)):
                 optimizer.zero_grad()
                 images = images.to(device)
@@ -105,14 +137,24 @@ def train(opt):
                 # target_dist = F.one_hot(target_ids.squeeze(1).long().to(device)).permute(0, 3, 1, 2).float()
 
                 outs = model(images)
-                loss = focal_loss(outs, target_ids, alpha=0.25, gamma=2.0)
+                focal = focal_loss(outs, target_ids, alpha=0.25, gamma=2.0)
+                dice = dice_loss(outs, target_ids, ignore_index=train.BACKGROUND)
+
+                loss = focal + dice
                 loss.backward()
-                train_losses.append(loss.cpu().item())
+
+                train_losses.append(focal.cpu().item())
+                dice_losses.append(dice.cpu().item())
                 optimizer.step()
 
             train_loss = torch.Tensor(train_losses).mean().item()
+            d_loss = torch.Tensor(dice_losses).mean().item()
             train_loss_plot.append(train_loss)
-            print("Epoch: {}, Train Loss: {:.4f}".format(epoch, train_loss))
+            print(
+                "Epoch: {}, Train Loss: {:.4f}, Dice Loss: {:.4f}".format(
+                    epoch, train_loss, d_loss
+                )
+            )
             scheduler.step()
 
             if (epoch) % 5 == 0:
@@ -177,8 +219,9 @@ def train(opt):
     )
 
 
-def visualize(opt):
+def visualize(opt, hparams):
     device = opt.device
+    encoder = hparams["encoder"]
 
     val_tfs = tv2.Compose(
         [
@@ -193,9 +236,9 @@ def visualize(opt):
     )
 
     tmp = torch.load(opt.checkpoint)
-    model = unet.UnetSeg(3, val.classes, filts=32)
+    model = fcn.Fcn(3, val.classes, encoder=encoder)
     model.load_state_dict(tmp["model"])
-    model = model.to(device)
+    model = model.to(device=device)
     model = torch.compile(model)
 
     os.makedirs("vis", exist_ok=True)
@@ -264,12 +307,18 @@ if __name__ == "__main__":
     parser.add_argument(
         "-p", "--path", help="Path to cityscapes root", default="./cityscapes"
     )
+    parser.add_argument(
+        "--hparams", help="Hyperparameters json", default="./hparams.json"
+    )
     opt = parser.parse_args()
+
+    with open(opt.hparams, "r") as f:
+        hparams = json.load(f)
 
     if opt.device == "auto":
         opt.device = "cuda" if torch.cuda.is_available() else "cpu"
 
     if opt.action == "train":
-        train(opt)
+        train(opt, hparams)
     elif opt.action == "vis":
-        visualize(opt)
+        visualize(opt, hparams)

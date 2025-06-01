@@ -48,6 +48,8 @@ class CityScapesDataset(tud.Dataset):
         self.classes = 20
         self.categories = 8
 
+        self.BACKGROUND = 19
+
         if split == "train":
             subsets = TRAIN_SUBSETS
         elif split == "val":
@@ -83,7 +85,7 @@ class CityScapesDataset(tud.Dataset):
                 mask[mask == lb.id] = lb.trainId
             else:
                 # Assign 19 to background or "everything else"
-                mask[mask == lb.id] = 19
+                mask[mask == lb.id] = self.BACKGROUND
         return mask
 
     def class_to_orig_id(self, mask):
@@ -94,7 +96,7 @@ class CityScapesDataset(tud.Dataset):
                 tmp[mask == lb.trainId] = lb.id
                 m += tmp
 
-        m[m == 19] = 0
+        m[m == self.BACKGROUND] = 0
 
         return m
 
