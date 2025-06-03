@@ -311,7 +311,7 @@ def export(opt, hparams):
             "csoutputs",
         ],
         dynamo=True,
-        # opset_version=None,  # Might need to set explicitly if targetting an framework.
+        # opset_version=18,  # Might need to set explicitly if targetting an framework.
     )
     onnx_program.optimize()
     onnx_program.save(f"cityscapes_{encoder}.onnx")

@@ -25,7 +25,7 @@ Many of the cityscapes classes (trainId=255 or -1) are not used as per the instr
 ## Usage
 Desktop w/ dGPU:
 ```
-python3 -m venv myvenv
+virtualenv myvenv
 source myvenv/bin/activate
 pip install -r requirements.txt
 
@@ -45,16 +45,19 @@ python train.py -a export -p /path/to/cityscapes
 ```
 
 Orin Nano:
-Set these environment variables before trying to install.
+Here's how to set up the Orin for inference with TensorRT
 ```
+sudo apt install nvidia-tensorrt-dev
+# Use system-site-packages to pick up tensorrt from the system install.
+virtualenv myvenv --system-site-packages
+source myvenv/bin/activate
+
 export PIP_INDEX_URL=http://jetson.webredirect.org/jp6/cu126
 export PIP_TRUSTED_HOST=jetson.webredirect.org
 pip install -r requirements.txt
 
 # To test compiled model...
-sudo apt install nvidia-tensorrt-dev
-/usr/src/tensorrt/bin/trtexec --onnx=~/Downloads/cityscapes_resnet18.onnx --fp16 --bf16
-
+/usr/src/tensorrt/bin/trtexec --onnx=~/Downloads/cityscapes_resnet18.onnx --fp16 --saveEngine=cityscapes_trt.engine
 ```
 
 ## Eval
