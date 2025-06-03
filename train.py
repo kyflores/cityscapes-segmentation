@@ -313,8 +313,8 @@ def export(opt, hparams):
         dynamo=True,
         # opset_version=18,  # Might need to set explicitly if targetting an framework.
     )
-    onnx_program.optimize()
-    onnx_program.save(f"cityscapes_{encoder}.onnx")
+    onnx_program.optimize()  # type: ignore
+    onnx_program.save(f"cityscapes_{encoder}.onnx")  # type: ignore
 
     onnx_model = onnx.load(f"cityscapes_{encoder}.onnx")
     onnx.checker.check_model(onnx_model, full_check=True)

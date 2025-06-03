@@ -7,6 +7,7 @@ triton
 tqdm
 matplotlib
 cityscapesscripts
+opencv-python
 
 # Only needed if exporting ONNX
 onnx

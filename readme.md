@@ -23,49 +23,62 @@ Many of the cityscapes classes (trainId=255 or -1) are not used as per the instr
 
 
 ## Usage
-Desktop w/ dGPU:
+### dGPU:
+Setup
 ```
 virtualenv myvenv
 source myvenv/bin/activate
 pip install -r requirements.txt
+```
 
+Training the model. Checkpoints are saved every 5 epochs.
+```
 # Train the model.
 python train.py -a train -p /path/to/cityscapes
 
 # Train the model, restoring from a checkpoint
 python train.py -a train -p /path/to/cityscapes -c /path/to/checkpoint.pth
+```
 
+Viewing outputs and evaluating.
+```
 # View outputs. Creates a folder called vis and writes to it
 # Also creates `eval_result/` which can be passed to the official eval script.
 python train.py -a vis -p /path/to/cityscapes -c /path/to/checkpoint.pth
 
+pip install cityscapesscripts
+CITYSCAPES_RESULTS="$(pwd)/eval_result/" CITYSCAPES_DATASET="$(pwd)/../cityscapes/" csEvalPixelLevelSemanticLabeling
+```
+
+Export an ONNX file for other inference APIs. Produces `cityscapes_resnet18.onnx`
+```
 # Export an onnx model
 python train.py -a export -p /path/to/cityscapes
-
 ```
 
-Orin Nano:
-Here's how to set up the Orin for inference with TensorRT
+### Orin Nano Inference
+Setup
 ```
-sudo apt install nvidia-tensorrt-dev
-# Use system-site-packages to pick up tensorrt from the system install.
+sudo apt install nvidia-tensorrt-dev opencv-python
+
+# Use --system-site-packages to pick up tensorrt from the system install.
 virtualenv myvenv --system-site-packages
 source myvenv/bin/activate
 
 export PIP_INDEX_URL=http://jetson.webredirect.org/jp6/cu126
 export PIP_TRUSTED_HOST=jetson.webredirect.org
 pip install -r requirements.txt
+```
+
+Test
+```
+# First export onnx as described above, move the onnx file to Orin Nano
 
 # To test compiled model...
 /usr/src/tensorrt/bin/trtexec --onnx=~/Downloads/cityscapes_resnet18.onnx --fp16 --saveEngine=cityscapes_trt.engine
+python trt_infer_webcam.py
 ```
 
-## Eval
-```
-pip install cityscapesscripts
-
-CITYSCAPES_RESULTS="$(pwd)/eval_result/" CITYSCAPES_DATASET="$(pwd)/../cityscapes/" csEvalPixelLevelSemanticLabeling
-```
 
 ## Model
 The default configuration is resnet18 with pretrained imagenet weights with some
@@ -77,3 +90,7 @@ The model can be replaced by anything that has the following in/out shapes.
 
 ## Other
 I originally used SGD with LR=1e-2, but my results improved drastically with AdamW and LR=5e-4
+ffmpeg can make a video out of images like:
+```
+ffmpeg -framerate 30 -pattern_type glob -i '*.png' -c:v libx264 -pix_fmt yuv420p out.mp4
+```
