@@ -23,23 +23,43 @@ Many of the cityscapes classes (trainId=255 or -1) are not used as per the instr
 
 
 ## Usage
+Desktop w/ dGPU:
 ```
+python3 -m venv myvenv
+source myvenv/bin/activate
 pip install -r requirements.txt
 
 # Train the model.
 python train.py -a train -p /path/to/cityscapes
 
 # Train the model, restoring from a checkpoint
-python train.py -a train -p /path/to/cityscapes -a /path/to/checkpoint.pth
+python train.py -a train -p /path/to/cityscapes -c /path/to/checkpoint.pth
 
 # View outputs. Creates a folder called vis and writes to it
 # Also creates `eval_result/` which can be passed to the official eval script.
-python train.py -a vis -p /path/to/cityscpaes -a /path/to/checkpoint.pth
+python train.py -a vis -p /path/to/cityscapes -c /path/to/checkpoint.pth
+
+# Export an onnx model
+python train.py -a export -p /path/to/cityscapes
+
+```
+
+Orin Nano:
+Set these environment variables before trying to install.
+```
+export PIP_INDEX_URL=http://jetson.webredirect.org/jp6/cu126
+export PIP_TRUSTED_HOST=jetson.webredirect.org
+pip install -r requirements.txt
+
+# To test compiled model...
+sudo apt install nvidia-tensorrt-dev
+/usr/src/tensorrt/bin/trtexec --onnx=~/Downloads/cityscapes_resnet18.onnx --fp16 --bf16
+
 ```
 
 ## Eval
 ```
-# First install cityscapesscripts
+pip install cityscapesscripts
 
 CITYSCAPES_RESULTS="$(pwd)/eval_result/" CITYSCAPES_DATASET="$(pwd)/../cityscapes/" csEvalPixelLevelSemanticLabeling
 ```

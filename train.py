@@ -20,15 +20,15 @@ import unet
 
 # https://arxiv.org/pdf/1708.02002
 # https://discuss.pytorch.org/t/focal-loss-for-imbalanced-multi-class-classification-in-pytorch/61289/2
-def focal_loss(inputs, target, alpha, gamma):
-    ce = F.cross_entropy(inputs, target, reduction="none", ignore_index=255)
+def focal_loss(inputs, target, alpha, gamma, ignore_index=-100):
+    ce = F.cross_entropy(inputs, target, reduction="none", ignore_index=ignore_index)
     pt = torch.exp(-ce)
     focal_loss = (alpha * (1 - pt) ** gamma * ce).mean()  # mean over the batch
     return focal_loss
 
 
 # Adapted from https://medium.com/data-scientists-diary/implementation-of-dice-loss-vision-pytorch-7eef1e438f68
-def dice_loss(preds, targets, ignore_index=None):
+def dice_loss(preds, targets, ignore_index=-100):
     b, num_classes, h, w = preds.shape
 
     preds = preds.softmax(dim=1)
@@ -42,9 +42,8 @@ def dice_loss(preds, targets, ignore_index=None):
 
     dice = torch.zeros(b, dtype=torch.float32, device=preds.device)
     for c in range(num_classes):
-        if ignore_index is not None:
-            if c == ignore_index:
-                continue
+        if c == ignore_index:
+            continue
         intersection = (2 * preds[:, c] * target_dist[:, c]).sum(dim=(-2, -1))
         union = (preds[:, c] + target_dist[:, c]).sum(dim=(-2, -1))
 
@@ -69,14 +68,15 @@ def train(opt, hparams):
             tv2.RandomHorizontalFlip(0.5),
             tv2.RandomResizedCrop((dim, dim)),
             tv2.ToDtype(torch.float32, scale=True),
+            # This guy MUST come before the normalize.
+            tv2.ColorJitter(
+                brightness=(0.875, 1.125),
+                contrast=(0.9, 1.1),
+                saturation=(0.9, 1.1),
+                hue=None,
+            ),
             # Since we use pretrained resnet, we also want to use imagenet normalization.
             tv2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            # tv2.ColorJitter(
-            #     brightness=(0.875, 1.125),
-            #     contrast=(0.9, 1.1),
-            #     saturation=(0.9, 1.1),
-            #     hue=None,
-            # )
         ]
     )
 
@@ -125,7 +125,9 @@ def train(opt, hparams):
     try:
         for epoch in range(start_epoch, epochs):
             model.train()
-            train_losses = []
+
+            cel_losses = []
+            focal_losses = []
             dice_losses = []
             for i, (images, targets, _) in enumerate(tqdm(train_loader)):
                 optimizer.zero_grad()
@@ -137,22 +139,27 @@ def train(opt, hparams):
                 # target_dist = F.one_hot(target_ids.squeeze(1).long().to(device)).permute(0, 3, 1, 2).float()
 
                 outs = model(images)
+
+                cel = F.cross_entropy(outs, target_ids)
                 focal = focal_loss(outs, target_ids, alpha=0.25, gamma=2.0)
-                dice = dice_loss(outs, target_ids, ignore_index=train.BACKGROUND)
+                dice = dice_loss(outs, target_ids)
 
                 loss = focal + dice
                 loss.backward()
 
-                train_losses.append(focal.cpu().item())
+                cel_losses.append(cel.cpu().item())
+                focal_losses.append(focal.cpu().item())
                 dice_losses.append(dice.cpu().item())
                 optimizer.step()
 
-            train_loss = torch.Tensor(train_losses).mean().item()
-            d_loss = torch.Tensor(dice_losses).mean().item()
-            train_loss_plot.append(train_loss)
+            cel_loss_avg = torch.Tensor(cel_losses).mean().item()
+            focal_loss_avg = torch.Tensor(focal_losses).mean().item()
+            dice_loss_avg = torch.Tensor(dice_losses).mean().item()
+
+            train_loss_plot.append(focal_loss_avg + dice_loss_avg)
             print(
-                "Epoch: {}, Train Loss: {:.4f}, Dice Loss: {:.4f}".format(
-                    epoch, train_loss, d_loss
+                "Epoch: {}, Cross Entropy: {:.4f}, Focal: {:.4f}, Dice: {:.4f}".format(
+                    epoch, cel_loss_avg, focal_loss_avg, dice_loss_avg
                 )
             )
             scheduler.step()
@@ -161,7 +168,6 @@ def train(opt, hparams):
                 losses = []
                 model.eval()
                 corrects = []
-                total = len(val)
                 print("Running val...")
                 with torch.no_grad():
                     for i, (images, targets, _) in enumerate(tqdm(val_loader)):
@@ -183,7 +189,7 @@ def train(opt, hparams):
                 eval_loss = torch.tensor(losses).mean().item()
                 correct = torch.tensor(corrects).mean().item()
                 print(
-                    "Epoch: {}, Eval Loss: {:.4f}. {:.2f}% pixelwise accuracy".format(
+                    "Epoch: {}, Focal Loss: {:.4f}. {:.2f}% pixelwise accuracy".format(
                         epoch, eval_loss, correct
                     )
                 )
@@ -239,7 +245,6 @@ def visualize(opt, hparams):
     model = fcn.Fcn(3, val.classes, encoder=encoder)
     model.load_state_dict(tmp["model"])
     model = model.to(device=device)
-    model = torch.compile(model)
 
     os.makedirs("vis", exist_ok=True)
     os.makedirs("eval_result", exist_ok=True)
@@ -284,6 +289,37 @@ def visualize(opt, hparams):
         print("Average IOU {}".format(torch.tensor(ious).mean().item()))
 
 
+def export(opt, hparams):
+    import onnx
+
+    encoder = hparams["encoder"]
+
+    val = dataset.CityScapesDataset(opt.path, "val")
+
+    tmp = torch.load(opt.checkpoint)
+    model = fcn.Fcn(3, val.classes, encoder=encoder)
+    model.load_state_dict(tmp["model"])
+    model = model
+
+    onnx_program = torch.onnx.export(
+        model,
+        (torch.randn(1, 3, 512, 512),),
+        input_names=[
+            "csinputs",
+        ],
+        output_names=[
+            "csoutputs",
+        ],
+        dynamo=True,
+        # opset_version=None,  # Might need to set explicitly if targetting an framework.
+    )
+    onnx_program.optimize()
+    onnx_program.save(f"cityscapes_{encoder}.onnx")
+
+    onnx_model = onnx.load(f"cityscapes_{encoder}.onnx")
+    onnx.checker.check_model(onnx_model, full_check=True)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser("Cityscapes Segmentation")
     parser.add_argument(
@@ -291,7 +327,7 @@ if __name__ == "__main__":
         "--action",
         help="What task to perform",
         default="train",
-        choices=["train", "vis"],
+        choices=["train", "vis", "export"],
     )
     parser.add_argument(
         "-d", "--device", help="Compute device to run on", default="auto"
@@ -322,3 +358,5 @@ if __name__ == "__main__":
         train(opt, hparams)
     elif opt.action == "vis":
         visualize(opt, hparams)
+    elif opt.action == "export":
+        export(opt, hparams)

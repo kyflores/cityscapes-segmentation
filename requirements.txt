@@ -3,6 +3,11 @@ torchvision
 torchmetrics
 torchvision
 torchinfo
+triton
 tqdm
 matplotlib
 cityscapesscripts
+
+# Only needed if exporting ONNX
+onnx
+onnxscript
