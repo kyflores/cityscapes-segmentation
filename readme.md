@@ -75,7 +75,8 @@ Test
 # First export onnx as described above, move the onnx file to Orin Nano
 
 # To test compiled model...
-/usr/src/tensorrt/bin/trtexec --onnx=~/Downloads/cityscapes_resnet18.onnx --fp16 --saveEngine=cityscapes_trt.engine
+# Sparsity will only be used if trained with APEX.
+/usr/src/tensorrt/bin/trtexec --onnx=~/Downloads/cityscapes_resnet18.onnx --fp16 --saveEngine=cityscapes_trt.engine --sparsity=enable
 python trt_infer_webcam.py
 ```
 

@@ -164,6 +164,7 @@ def train(opt, hparams):
             )
             scheduler.step()
 
+            eval_loss = 0
             if (epoch) % 5 == 0:
                 losses = []
                 model.eval()
@@ -301,9 +302,10 @@ def export(opt, hparams):
     model.load_state_dict(tmp["model"])
     model = model
 
+    print("Exporting with size {}".format(opt.export_dim))
     onnx_program = torch.onnx.export(
         model,
-        (torch.randn(1, 3, 512, 512),),
+        (torch.randn(1, 3, opt.export_dim[0], opt.export_dim[1]),),
         input_names=[
             "csinputs",
         ],
@@ -311,7 +313,7 @@ def export(opt, hparams):
             "csoutputs",
         ],
         dynamo=True,
-        # opset_version=18,  # Might need to set explicitly if targetting an framework.
+        # opset_version=18,  # Might need to set explicitly if targetting an older framework.
     )
     onnx_program.optimize()  # type: ignore
     onnx_program.save(f"cityscapes_{encoder}.onnx")  # type: ignore
@@ -346,7 +348,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--hparams", help="Hyperparameters json", default="./hparams.json"
     )
+    parser.add_argument(
+        "--export-dim", help="Output dimension to export with", default="512,512"
+    )
     opt = parser.parse_args()
+
+    opt.export_dim = [int(x) for x in opt.export_dim.split(",")]
+    assert len(opt.export_dim) == 2
 
     with open(opt.hparams, "r") as f:
         hparams = json.load(f)
