@@ -17,6 +17,10 @@ import dataset
 import fcn
 import unet
 
+# See https://docs.pytorch.org/docs/stable/notes/cuda.html for what this does
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+
 
 # https://arxiv.org/pdf/1708.02002
 # https://discuss.pytorch.org/t/focal-loss-for-imbalanced-multi-class-classification-in-pytorch/61289/2
@@ -92,11 +96,15 @@ def train(opt, hparams):
     val = dataset.CityScapesDataset(opt.path, "val", tfs=val_tfs)
     test = dataset.CityScapesDataset(opt.path, "test", tfs=val_tfs)
 
+    cpus = os.cpu_count()
+    if cpus is None:
+        cpus = 4
+
     train_loader = torch.utils.data.DataLoader(
-        train, batch_size=batchsize, num_workers=8, shuffle=True
+        train, batch_size=batchsize, num_workers=cpus, shuffle=True
     )
     val_loader = torch.utils.data.DataLoader(
-        val, batch_size=batchsize, num_workers=8, shuffle=True
+        val, batch_size=batchsize, num_workers=cpus, shuffle=True
     )
 
     num_classes = train.classes
@@ -123,6 +131,7 @@ def train(opt, hparams):
     train_loss_plot = []
     loss_plot = []
     try:
+        scaler = torch.amp.grad_scaler.GradScaler(device=device)
         for epoch in range(start_epoch, epochs):
             model.train()
 
@@ -130,7 +139,6 @@ def train(opt, hparams):
             focal_losses = []
             dice_losses = []
             for i, (images, targets, _) in enumerate(tqdm(train_loader)):
-                optimizer.zero_grad()
                 images = images.to(device)
                 # CrossEntropy allows 2D map of IDs rather than one-hot encoded map
                 target_ids = targets.squeeze(1).long().to(device)
@@ -138,19 +146,23 @@ def train(opt, hparams):
                 # This expands the targets to a full distribution
                 # target_dist = F.one_hot(target_ids.squeeze(1).long().to(device)).permute(0, 3, 1, 2).float()
 
-                outs = model(images)
+                with torch.autocast(device_type=device, dtype=torch.float16):
+                    outs = model(images)
 
-                cel = F.cross_entropy(outs, target_ids)
-                focal = focal_loss(outs, target_ids, alpha=0.25, gamma=2.0)
-                dice = dice_loss(outs, target_ids)
+                    cel = F.cross_entropy(outs, target_ids)
+                    focal = focal_loss(outs, target_ids, alpha=0.25, gamma=2.0)
+                    dice = dice_loss(outs, target_ids)
 
-                loss = focal + dice
-                loss.backward()
+                    loss = focal + dice
+                scaler.scale(loss).backward()
 
                 cel_losses.append(cel.cpu().item())
                 focal_losses.append(focal.cpu().item())
                 dice_losses.append(dice.cpu().item())
-                optimizer.step()
+
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
 
             cel_loss_avg = torch.Tensor(cel_losses).mean().item()
             focal_loss_avg = torch.Tensor(focal_losses).mean().item()
