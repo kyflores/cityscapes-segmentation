@@ -37,6 +37,8 @@ TEST_SUBSETS = ["berlin", "bielefeld", "bonn", "leverkusen", "mainz", "munich"]
 
 
 class CityScapesDataset(tud.Dataset):
+    BACKGROUND = 19
+
     def __init__(self, root: str, split: str, tfs: tv2.Compose | None = None):
         super().__init__()
 
@@ -47,8 +49,6 @@ class CityScapesDataset(tud.Dataset):
         # TODO see https://github.com/mcordts/cityscapesScripts/blob/master/cityscapesscripts/helpers/labels.py
         self.classes = 20
         self.categories = 8
-
-        self.BACKGROUND = 19
 
         if split == "train":
             subsets = TRAIN_SUBSETS

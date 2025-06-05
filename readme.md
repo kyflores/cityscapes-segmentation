@@ -77,7 +77,9 @@ Test
 # To test compiled model...
 # Sparsity will only be used if trained with APEX.
 /usr/src/tensorrt/bin/trtexec --onnx=~/Downloads/cityscapes_resnet18.onnx --fp16 --saveEngine=cityscapes_trt.engine --sparsity=enable
-python trt_infer_webcam.py
+python trt_infer_webapp.py
+
+# The infer app opens a web ui on port 5000 by default
 ```
 
 

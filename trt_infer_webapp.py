@@ -16,6 +16,8 @@ import torch.nn.functional as F
 import torchvision.transforms.v2 as tv2
 import tensorrt as trt
 
+import dataset
+
 app = Flask(__name__)
 
 # Global frame queue
@@ -119,7 +121,14 @@ def camera_thread(engname: str, cap_device=0):
             trt_vars["context"].execute_v2(tensors)
 
             # After this, seg is 512x512 grayscale image
-            seg = F.softmax(trt_vars["allocs"][1], dim=1).max(dim=1)[1].squeeze()
+            # seg = F.softmax(trt_vars["allocs"][1], dim=1).max(dim=1)[1].squeeze()
+            thresh = 0.5
+            max_val, max_idx = F.softmax(trt_vars["allocs"][1], dim=1).max(dim=1)
+            seg = torch.ones_like(max_idx) * dataset.CityScapesDataset.BACKGROUND
+            thresholded_mask = max_val > thresh
+            seg[thresholded_mask] = max_idx[thresholded_mask]
+
+            print(seg.shape)
 
             t_end = time.time()
             print(
@@ -129,7 +138,7 @@ def camera_thread(engname: str, cap_device=0):
             )
 
             # Dumb multiply by 10 to get back into the 0-255 range
-            seg = 10 * seg.to(torch.uint8).cpu().numpy()
+            seg = 10 * seg.squeeze().to(torch.uint8).cpu().numpy()
 
             # Put frame in queue, drop old frames if queue is full
             if not frame_queue.full():
@@ -219,6 +228,13 @@ if __name__ == "__main__":
         "--capture",
         help="Capture ID to pass on to cv2.VideoCapture. Can be a number, or path to video file.",
         default="0",
+    )
+    parser.add_argument(
+        "-t",
+        "--threshold",
+        help="Threshold for segmentation post processing. Pixels with scores below threshold are assigned to the background class.",
+        type=float,
+        default=0.5,
     )
     opt = parser.parse_args()
 
