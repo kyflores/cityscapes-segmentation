@@ -202,9 +202,6 @@ def video_feed():
 
 
 if __name__ == "__main__":
-    if not os.path.isfile("/etc/nv_tegra_release"):
-        print("This script must be run on a tegra device.")
-        exit(1)
 
     # Set up signal handler for cancelling the camera thread.
     signal.signal(signal.SIGINT, signal_handler)

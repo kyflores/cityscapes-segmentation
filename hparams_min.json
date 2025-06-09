@@ -5,8 +5,8 @@
     "lr" : 5e-4,
     "lr_floor" : 2e-5,
     "encoder" : "resnet18",
-    "cross_entropy_loss": false,
-    "focal_loss": true,
-    "dice_loss": true,
-    "use_amp": true
+    "cross_entropy_loss": true,
+    "focal_loss": false,
+    "dice_loss": false,
+    "use_amp": false
 }

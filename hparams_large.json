@@ -4,7 +4,7 @@
     "epochs" : 50,
     "lr" : 5e-4,
     "lr_floor" : 2e-5,
-    "encoder" : "resnet18",
+    "encoder" : "resnet50",
     "cross_entropy_loss": false,
     "focal_loss": true,
     "dice_loss": true,

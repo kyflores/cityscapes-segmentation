@@ -146,14 +146,25 @@ def train(opt, hparams):
                 # This expands the targets to a full distribution
                 # target_dist = F.one_hot(target_ids.squeeze(1).long().to(device)).permute(0, 3, 1, 2).float()
 
-                with torch.autocast(device_type=device, dtype=torch.float16):
+                with torch.autocast(
+                    device_type=device, dtype=torch.float16, enabled=hparams["use_amp"]
+                ):
                     outs = model(images)
 
                     cel = F.cross_entropy(outs, target_ids)
                     focal = focal_loss(outs, target_ids, alpha=0.25, gamma=2.0)
                     dice = dice_loss(outs, target_ids)
 
-                    loss = focal + dice
+                    loss = torch.zeros_like(cel)
+                    if hparams["cross_entropy_loss"]:
+                        loss = loss + cel
+
+                    if hparams["focal_loss"]:
+                        loss = loss + focal
+
+                    if hparams["dice_loss"]:
+                        loss = loss + dice
+
                 scaler.scale(loss).backward()
 
                 cel_losses.append(cel.cpu().item())
@@ -318,17 +329,16 @@ def export(opt, hparams):
     onnx_program = torch.onnx.export(
         model,
         (torch.randn(1, 3, opt.export_dim[0], opt.export_dim[1]),),
+        f"cityscapes_{encoder}.onnx",
         input_names=[
             "csinputs",
         ],
         output_names=[
             "csoutputs",
         ],
-        dynamo=True,
+        dynamo=False,  # This is broken in the NVIDIA Container?
         # opset_version=18,  # Might need to set explicitly if targetting an older framework.
     )
-    onnx_program.optimize()  # type: ignore
-    onnx_program.save(f"cityscapes_{encoder}.onnx")  # type: ignore
 
     onnx_model = onnx.load(f"cityscapes_{encoder}.onnx")
     onnx.checker.check_model(onnx_model, full_check=True)
